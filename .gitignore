@@ -1,0 +1,16 @@
+# Build output
+/dist/
+*.exe
+coverage.out
+
+# Local env (never commit secrets)
+.env
+
+# Go workspace files
+go.work
+go.work.sum
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/

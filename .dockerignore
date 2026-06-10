@@ -1,0 +1,7 @@
+.git
+.github
+dist
+*.md
+.env
+.env.example
+deploy/docker-compose.yml
