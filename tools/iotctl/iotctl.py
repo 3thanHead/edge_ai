@@ -222,6 +222,9 @@ def render_haproxy(nodes, default_model):
         "frontend llm",
         "    bind *:11434",
         "    option http-buffer-request",   # buffer the body so ACLs can read "model"
+        # Tell the client which node actually served the request (the node name from this
+        # config). Reflects the FINAL server after any retry/redispatch — apps can surface it.
+        "    http-response set-header X-Served-By %[srv_name]",
     ]
     for m in models:
         rx = _model_acl_rx(m)

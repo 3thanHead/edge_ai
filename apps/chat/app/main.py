@@ -60,6 +60,10 @@ async def _stream_chat(ws: WebSocket, model, messages):
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
                 resp.raise_for_status()
+                # HAProxy stamps the serving node on X-Served-By; show it in the UI.
+                node = resp.headers.get("x-served-by")
+                if node:
+                    await ws.send_json({"type": "node", "name": node})
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue

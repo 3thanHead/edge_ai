@@ -93,6 +93,9 @@
     button:disabled { opacity: 0.4; cursor: default; }
     button.stop { background: #b54a3a; color: #fff; }
     .stopped { color: var(--muted); font-size: 12px; font-style: italic; }
+    .node-badge { display: none; font-size: 11px; color: var(--muted); margin-bottom: 5px; letter-spacing: .02em; }
+    .node-badge.on { display: block; }
+    .node-badge.on::before { content: "● "; color: #4caf50; }
     .hint { max-width: 760px; margin: 6px auto 0; color: var(--muted); font-size: 11px; }
   </style>
 </head>
@@ -141,7 +144,18 @@
       avatar.textContent = role === "user" ? "U" : "AI";
       const bubble = document.createElement("div");
       bubble.className = "bubble";
-      bubble.textContent = text;
+      if (role === "bot") {
+        // badge (which node served) + text are separate children so per-token text
+        // updates don't wipe the badge; the cursor is appended after, by send().
+        const badge = document.createElement("span");
+        badge.className = "node-badge";
+        const textEl = document.createElement("span");
+        textEl.className = "text";
+        textEl.textContent = text;
+        bubble.append(badge, textEl);
+      } else {
+        bubble.textContent = text;
+      }
       msg.append(avatar, bubble);
       row.append(msg);
       messagesEl.append(row);
@@ -184,10 +198,12 @@
 
     function onMessage(ev) {
       const data = JSON.parse(ev.data);
-      if (data.type === "token") {
+      if (data.type === "node") {
+        const badge = activeBubble && activeBubble.querySelector(".node-badge");
+        if (badge) { badge.textContent = data.name; badge.classList.add("on"); }
+      } else if (data.type === "token") {
         activeText += data.content;
-        activeBubble.textContent = activeText;
-        activeBubble.append(cursor());
+        activeBubble.querySelector(".text").textContent = activeText;  // cursor (sibling) stays last
         messagesEl.scrollTop = messagesEl.scrollHeight;
       } else if (data.type === "done") {
         finishStreaming();
