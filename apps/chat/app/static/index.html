@@ -91,6 +91,8 @@
       cursor: pointer; font-size: 14px;
     }
     button:disabled { opacity: 0.4; cursor: default; }
+    button.stop { background: #b54a3a; color: #fff; }
+    .stopped { color: var(--muted); font-size: 12px; font-style: italic; }
     .hint { max-width: 760px; margin: 6px auto 0; color: var(--muted); font-size: 11px; }
   </style>
 </head>
@@ -109,7 +111,7 @@
       <textarea id="input" rows="1" placeholder="Message the cluster…" autofocus></textarea>
       <button id="send">Send</button>
     </div>
-    <div class="hint">Enter to send · Shift+Enter for newline</div>
+    <div class="hint">Enter to send · Shift+Enter for newline · Esc to stop</div>
   </footer>
 
   <script>
@@ -190,6 +192,16 @@
       } else if (data.type === "done") {
         finishStreaming();
         history.push({ role: "assistant", content: activeText });
+      } else if (data.type === "cancelled") {
+        // keep the partial output (so the conversation can continue from it) + mark it
+        if (activeText) history.push({ role: "assistant", content: activeText });
+        if (activeBubble) {
+          const note = document.createElement("span");
+          note.className = "stopped";
+          note.textContent = activeText ? "  ⊘ stopped" : "⊘ stopped";
+          activeBubble.append(note);
+        }
+        finishStreaming();
       } else if (data.type === "error") {
         activeBubble.innerHTML = "";
         const err = document.createElement("span");
@@ -206,15 +218,20 @@
       return c;
     }
 
+    function setStreaming(on) {
+      streaming = on;
+      sendEl.textContent = on ? "Stop" : "Send";
+      sendEl.classList.toggle("stop", on);  // Stop must stay clickable, so never disable
+    }
+
     function finishStreaming() {
-      streaming = false;
-      sendEl.disabled = false;
       const c = activeBubble && activeBubble.querySelector(".cursor");
       if (c) c.remove();
       activeBubble = null;
+      setStreaming(false);
     }
 
-    // ----- sending -----
+    // ----- sending / stopping -----
     function send() {
       const text = inputEl.value.trim();
       if (!text || streaming || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -229,14 +246,19 @@
       activeBubble = addMessage("bot", "");
       activeBubble.append(cursor());
 
-      streaming = true;
-      sendEl.disabled = true;
+      setStreaming(true);
       ws.send(JSON.stringify({ model, messages: history }));
     }
 
-    sendEl.addEventListener("click", send);
+    function stop() {
+      if (!streaming || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "cancel" }));  // UI finalizes on the server's "cancelled"
+    }
+
+    sendEl.addEventListener("click", () => (streaming ? stop() : send()));
     inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!streaming) send(); }
+      else if (e.key === "Escape" && streaming) { e.preventDefault(); stop(); }
     });
 
     function autoGrow() {

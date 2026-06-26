@@ -52,43 +52,68 @@ async def list_models():
     return {"models": sorted({name for names in per_node for name in names})}
 
 
+async def _stream_chat(ws: WebSocket, model, messages):
+    """Stream one completion to the browser. Cancelling this task unwinds the httpx
+    context managers, which closes the upstream request so Ollama stops generating."""
+    payload = {"model": model, "messages": messages, "stream": True}
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    token = chunk.get("message", {}).get("content", "")
+                    if token:
+                        await ws.send_json({"type": "token", "content": token})
+                    if chunk.get("done"):
+                        break
+        await ws.send_json({"type": "done"})
+    except httpx.HTTPError as exc:
+        await ws.send_json({"type": "error", "message": f"cluster error: {exc}"})
+
+
+async def _cancel(task):
+    """Cancel an in-flight generation task and wait for it to fully unwind."""
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 @app.websocket("/ws/chat")
 async def chat(ws: WebSocket):
-    """Stream a chat completion token-by-token to the browser.
+    """Stream a chat completion token-by-token to the browser, cancellable mid-stream.
 
-    Client sends: {"model": "...", "messages": [{"role", "content"}, ...]}
-    Server sends: {"type": "token", "content": "..."} repeatedly,
-                  then {"type": "done"} (or {"type": "error", "message": "..."}).
+    Generation runs in a background task so the socket stays readable; a {"type":"cancel"}
+    message (or a new chat while one is in flight) aborts it. Client sends either
+    {"model","messages"} to generate or {"type":"cancel"} to stop. Server sends
+    {"type":"token"|"done"|"cancelled"|"error"}.
     """
     await ws.accept()
+    gen = None
     try:
         while True:
             req = await ws.receive_json()
+            if req.get("type") == "cancel":
+                if gen and not gen.done():
+                    await _cancel(gen)
+                    await ws.send_json({"type": "cancelled"})
+                continue
+
             model = req.get("model")
             messages = req.get("messages", [])
             if not model or not messages:
                 await ws.send_json({"type": "error", "message": "model and messages are required"})
                 continue
 
-            payload = {"model": model, "messages": messages, "stream": True}
-            try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
-                        resp.raise_for_status()
-                        async for line in resp.aiter_lines():
-                            if not line.strip():
-                                continue
-                            chunk = json.loads(line)
-                            token = chunk.get("message", {}).get("content", "")
-                            if token:
-                                await ws.send_json({"type": "token", "content": token})
-                            if chunk.get("done"):
-                                break
-                await ws.send_json({"type": "done"})
-            except httpx.HTTPError as exc:
-                await ws.send_json({"type": "error", "message": f"cluster error: {exc}"})
+            await _cancel(gen)  # never run two generations on one socket at once
+            gen = asyncio.create_task(_stream_chat(ws, model, messages))
     except WebSocketDisconnect:
-        pass
+        await _cancel(gen)  # client closed the tab mid-stream -> stop generating upstream
 
 
 # Serve the frontend. Mounted last so the API routes above take precedence.
