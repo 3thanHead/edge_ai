@@ -9,14 +9,17 @@ macOS, and Windows. Stdlib-only -- no pip install needed.
 Commands:
     iot install-node            set up THIS machine as an Ollama LLM node (OS-sensed)
     iot deploy [target]         push the cluster from here over SSH (nodes + master)
+    iot deploy <app>            ship the repo + rebuild an app (e.g. chat) on the master
     iot up   <name|all> [--build]   start an app/infra via its docker compose
     iot down <name|all>             stop it
     iot status [name|all]           show running containers (+ machine role)
     iot list                        list discoverable apps/infra + nodes
     iot cluster                     health of every LLM node + the load balancer
+    iot model ls                    list the models available on each node
     iot model pull [name]           pull the cluster model on THIS node (ollama)
     iot model set  <name>           pull on every node + make it the cluster default
     iot model set  <name> --node X  give just node X another model (routing follows)
+    iot model rm   <name>           remove a model from every node (or --node) + routing
     iot flash <args...>             passthrough to tools/fleetctl (firmware)
     iot doctor                      check prerequisites (docker/ollama/python)
 """
@@ -29,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -71,6 +75,17 @@ def http_json(url, timeout=2):
             return json.loads(r.read().decode())
     except Exception:
         return None
+
+
+def wait_http(url, tries=20, delay=1):
+    """Poll until `url` answers (e.g. HAProxy just restarted). True if it came up."""
+    if DRY_RUN:
+        return True
+    for _ in range(tries):
+        if http_json(url) is not None:
+            return True
+        time.sleep(delay)
+    return False
 
 
 def detect_os():
@@ -140,6 +155,15 @@ def _san(model):
     return re.sub(r"[^a-zA-Z0-9]", "_", model)
 
 
+def _model_acl_rx(model):
+    """ERE fragment matching a model name in the request body, treating an untagged
+    name as equivalent to its `:latest` tag (Ollama does: `mistral` == `mistral:latest`).
+    So fleet model `mistral` still routes a `"model":"mistral:latest"` request, and
+    vice-versa. A tagged name like `llama3.2:3b` must match exactly."""
+    base, _, tag = model.partition(":")
+    return re.escape(base) + "(:latest)?" if tag in ("", "latest") else re.escape(model)
+
+
 def node_models(n, default_model):
     """Models a node serves: its explicit `models` list, else the cluster default."""
     return n.get("models") or [default_model]
@@ -173,13 +197,24 @@ def render_haproxy(nodes, default_model):
         "    timeout connect 5s",
         "    timeout client 300s",
         "    timeout server 300s",
+        # Fault tolerance: if a node fails to answer OR returns a 5xx (e.g. Ollama up
+        # but its runner is broken, so it passes the /api/tags check yet 500s on
+        # generate), transparently re-dispatch the request to a *different* healthy
+        # node instead of surfacing the error. The body is buffered (http-buffer-request
+        # below) so even POST /api/chat is safely replayable. Retries happen before any
+        # bytes reach the client, so a good node's stream is unaffected. 404 is included
+        # because Ollama returns it for "model not found on this node" — redispatching
+        # sends the request to a node that actually has the model.
+        "    retries 3",
+        "    option redispatch",
+        "    retry-on all-retryable-errors 404 500 502 503 504",
         "",
         "frontend llm",
         "    bind *:11434",
         "    option http-buffer-request",   # buffer the body so ACLs can read "model"
     ]
     for m in models:
-        rx = re.escape(m)
+        rx = _model_acl_rx(m)
         L.append(f'    acl want_{_san(m)} req.body -m reg '
                  f'"\\"model\\"[[:space:]]*:[[:space:]]*\\"{rx}\\""')
     for m in models:
@@ -339,6 +374,27 @@ def _pull_on_node(n, model):
                    f"http://localhost:11434/api/pull -d '{payload}'", tty=False) == 0
 
 
+def _delete_on_node(n, model):
+    """Remove `model` from one node via its own /api/delete (200 ok, 404 if absent)."""
+    name = n["name"]
+    if n.get("ssh") == "interop":
+        if not have("powershell.exe"):
+            say(f"  {C['y']}skip {name}{C['x']} (interop unavailable here)"); return False
+        say(f"-> {name}: removing {model} (interop)…")
+        ps = ('$ollama="$env:LOCALAPPDATA\\Programs\\Ollama\\ollama.exe";'
+              '$env:OLLAMA_HOST="0.0.0.0:11434";'
+              f'& $ollama rm {model} 2>&1 | Out-Null; exit $LASTEXITCODE')
+        return run(["powershell.exe", "-NoProfile", "-Command", ps], check=False) == 0
+    if not n.get("ssh"):
+        say(f"  {C['y']}skip {name}{C['x']} (no ssh target)"); return False
+    say(f"-> {name}: removing {model}…")
+    payload = json.dumps({"name": model})
+    # -X DELETE via the node's own API; print the status so 404 (already absent) is visible.
+    return ssh_run(n["ssh"],
+                   f"curl -sS -o /dev/null -w '   {name}: HTTP %{{http_code}}\\n' "
+                   f"-X DELETE http://localhost:11434/api/delete -d '{payload}'", tty=False) == 0
+
+
 def _deploy_master(fleet, rpath):
     m = fleet.get("master", {})
     say(f"\n{C['b']}== master (HAProxy): {m.get('ssh', '?')} =={C['x']}")
@@ -352,8 +408,36 @@ def _deploy_master(fleet, rpath):
     if DRY_RUN:
         say(cfg)
     scp_text(m["ssh"], cfg, f"{rpath}/infra/llm-cluster/master/haproxy.cfg")
-    say("-> starting the load balancer…")
-    ssh_run(m["ssh"], f"cd {rpath} && ./iot up llm-cluster")
+    say("-> starting + reloading the load balancer…")
+    # `up -d` creates the container if needed; `restart` forces HAProxy to re-read the
+    # freshly shipped (bind-mounted) haproxy.cfg — `up -d` alone won't when it's already
+    # running, so a config-only change would otherwise never take effect.
+    ssh_run(m["ssh"], f"cd {rpath} && ./iot up llm-cluster && "
+                      f"docker compose -f infra/llm-cluster/master/docker-compose.yml restart")
+    # The restart bounces HAProxy for a second or two; wait for it to answer before any
+    # health check runs, so a deploy doesn't falsely report the LB "unreachable".
+    host = m.get("host") or m["ssh"].split("@")[-1]
+    say("-> waiting for HAProxy to come back…")
+    if not wait_http(f"http://{host}:11434/api/tags"):
+        say(f"{C['y']}HAProxy still not answering — re-check with `iot cluster`.{C['x']}")
+
+
+def _deploy_app(app, fleet, rpath):
+    """Ship the repo to the master (Mini PC) and (re)build+start an app there.
+
+    Apps (apps/*) run on the always-on, non-GPU master alongside HAProxy. Unlike
+    `iot up` (which acts on the local machine), this pushes code to the master and
+    runs `iot up <app> --build` remotely, so you redeploy from your laptop.
+    """
+    m = fleet.get("master", {})
+    say(f"\n{C['b']}== app: {app} -> master ({m.get('ssh', '?')}) =={C['x']}")
+    if not m.get("ssh"):
+        say(f"{C['y']}no master.ssh in fleet.json — skipping.{C['x']}")
+        return
+    say("-> syncing repo…")
+    rsync_repo(m["ssh"], rpath)
+    say(f"-> building + (re)starting {app} on the master…")
+    ssh_run(m["ssh"], f"cd {rpath} && ./iot up {app} --build")
 
 
 def cmd_deploy(args):
@@ -367,6 +451,14 @@ def cmd_deploy(args):
         say(f"{C['y']}(dry-run: showing commands, executing nothing){C['x']}")
 
     known = {n["name"] for n in fleet.get("nodes", [])}
+    # App names (apps/*); 'llm-cluster' is infra, deployed via the 'master' target.
+    apps = {n for n in discover_services() if n != "llm-cluster"}
+
+    # An app target ships the repo to the master and rebuilds the app there.
+    if target in apps:
+        _deploy_app(target, fleet, rpath)
+        return
+
     if target in ("all", "nodes"):
         for n in fleet.get("nodes", []):
             _deploy_node(n, model, rpath)
@@ -377,8 +469,8 @@ def cmd_deploy(args):
         _deploy_master(fleet, rpath)
 
     if target not in ("all", "nodes", "master") and target not in known:
-        say(f"{C['r']}unknown target: {target}{C['x']}  "
-            f"(use: all | nodes | master | {' | '.join(sorted(known))})")
+        say(f"{C['r']}unknown target: {target}{C['x']}  (use: all | nodes | master | "
+            f"{' | '.join(sorted(known))} | {' | '.join(sorted(apps))})")
         sys.exit(1)
 
     if not DRY_RUN:
@@ -455,6 +547,57 @@ def cmd_cluster(args):
 
 
 def cmd_model(args):
+    if args.action in ("ls", "list"):
+        # Query what each node actually has (its /api/tags) -> model -> [nodes] map.
+        say(f"{C['b']}Models available on the cluster{C['x']}  (default: {cluster_model()})")
+        catalog = {}
+        for name, host, port in list_nodes():
+            data = http_json(f"http://{host}:{port}/api/tags")
+            if data is None:
+                say(f"  {C['r']}● {name} unreachable{C['x']}"); continue
+            for m in data.get("models", []):
+                catalog.setdefault(m.get("name", "?"), set()).add(name)
+        if not catalog:
+            say("  (no models / no nodes reachable)"); return
+        for model in sorted(catalog):
+            say(f"  {model:<24} {', '.join(sorted(catalog[model]))}")
+        return
+
+    if args.action in ("rm", "remove"):
+        if not args.name:
+            say(f"{C['r']}usage: iot model rm <name> [--node <name>]{C['x']}"); sys.exit(1)
+        model = args.name
+        fleet = load_fleet(required=True)
+        nodes = fleet.get("nodes", [])
+        if args.node:
+            targets = [n for n in nodes if n["name"] == args.node]
+            if not targets:
+                say(f"{C['r']}unknown node: {args.node}{C['x']}  "
+                    f"({', '.join(n['name'] for n in nodes)})"); sys.exit(1)
+            say(f"{C['b']}Removing {model} from node '{args.node}'{C['x']}")
+        else:
+            targets = nodes
+            say(f"{C['b']}Removing {model} from every node{C['x']}")
+
+        ok = 0
+        for n in targets:
+            if _delete_on_node(n, model):
+                ok += 1
+            ml = n.get("models")  # drop it from the node's explicit list, if present
+            if ml and model in ml:
+                ml.remove(model)
+                if not ml:
+                    del n["models"]  # empty list -> fall back to the cluster default
+        if fleet.get("model") == model:
+            say(f"{C['y']}note: {model} was the cluster default — set a new one with "
+                f"`iot model set <name>`.{C['x']}")
+        FLEET.write_text(json.dumps(fleet, indent=2) + "\n")
+        say(f"\nremoved on {ok}/{len(targets)} node(s); fleet.json updated.")
+        say(f"{C['b']}-> updating HAProxy routing on the master…{C['x']}")
+        _deploy_master(fleet, fleet.get("remote_path", "~/iot_ai"))
+        cmd_cluster(args)
+        return
+
     if args.action == "pull":
         if not have("ollama"):
             say(f"{C['r']}ollama not found{C['x']} — run `iot install-node` first."); sys.exit(1)
@@ -534,7 +677,7 @@ def build_parser():
 
     s = sub.add_parser("deploy", help="push the cluster from here over SSH (uses fleet.json)")
     s.add_argument("target", nargs="?", default="all",
-                   help="all (default) | nodes | master | <node-name>")
+                   help="all (default) | nodes | master | <node-name> | <app-name>")
     s.add_argument("--dry-run", action="store_true", help="print what would run, do nothing")
     s.set_defaults(func=cmd_deploy)
 
@@ -554,11 +697,12 @@ def build_parser():
     sub.add_parser("list", help="list discoverable apps/infra + nodes").set_defaults(func=cmd_list)
     sub.add_parser("cluster", help="health of every LLM node + the load balancer").set_defaults(func=cmd_cluster)
 
-    s = sub.add_parser("model", help="pull locally, or set the model on the cluster / a node")
-    s.add_argument("action", choices=["pull", "set"],
-                   help="pull = this node; set = pull on every node (or --node) + update routing")
+    s = sub.add_parser("model", help="list/pull/set/remove models on the cluster / a node")
+    s.add_argument("action", choices=["ls", "list", "pull", "set", "rm", "remove"],
+                   help="ls = what each node has; pull = this node; set = pull on every node "
+                        "(or --node) + update routing; rm = remove from every node (or --node)")
     s.add_argument("name", nargs="?", help="model name (any model Ollama can pull)")
-    s.add_argument("--node", help="with 'set': target just this node (adds the model to it)")
+    s.add_argument("--node", help="with set/rm: target just this node")
     s.set_defaults(func=cmd_model)
 
     s = sub.add_parser("flash", help="passthrough to fleetctl (firmware)")
