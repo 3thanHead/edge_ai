@@ -1,0 +1,19 @@
+# LLM cluster master — runs on the Mini PC (192.168.1.111).
+# Brings up the HAProxy load balancer in front of the Ollama nodes.
+#
+#   docker compose up -d        # start the load balancer
+#   docker compose logs -f      # watch health-check / request logs
+#   docker compose restart      # reload after editing haproxy.cfg
+#   docker compose down         # stop
+#
+# The Mini PC needs nothing AI — just Docker. All inference happens on the nodes.
+services:
+  haproxy:
+    image: haproxy:2.9
+    container_name: llm-haproxy
+    ports:
+      - "11434:11434"   # unified Ollama endpoint (native API + OpenAI /v1)
+      - "8404:8404"     # stats dashboard
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    restart: unless-stopped

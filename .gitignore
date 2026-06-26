@@ -1,13 +1,17 @@
 # PlatformIO
-firmware/.pio/
+apps/camera-vision/firmware/.pio/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 
-# Secrets (WiFi creds etc., injected at build time)
+# Secrets — root .env (firmware creds) + every app's local .env
 .env
+**/.env
+
+# Fleet definition (SSH targets/hosts) — copy fleet.example.json -> fleet.json
+**/fleet.json
 
 # AI model weights (auto-downloaded) + inference outputs
 *.pt

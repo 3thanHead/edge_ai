@@ -1,9 +1,9 @@
-.git
 .venv
 firmware
-tools
+docs
 **/__pycache__
 *.pt
 runs
-*.md
+**/*.md
 .env
+.env.example

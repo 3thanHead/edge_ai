@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Repo layout: tools/fleetctl/fleetctl.py -> repo root is two parents up.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FIRMWARE_DIR = REPO_ROOT / "firmware"
+FIRMWARE_DIR = REPO_ROOT / "apps" / "camera-vision" / "firmware"
 REGISTRY = REPO_ROOT / "tools" / "fleetctl" / "deployments.json"
 ENV_FILE = REPO_ROOT / ".env"
 
