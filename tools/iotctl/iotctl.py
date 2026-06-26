@@ -453,7 +453,11 @@ def _deploy_app(app, fleet, rpath):
     say("-> syncing repo…")
     rsync_repo(m["ssh"], rpath)
     say(f"-> building + (re)starting {app} on the master…")
-    ssh_run(m["ssh"], f"cd {rpath} && ./iot up {app} --build")
+    # Expose the node list (from fleet.json, the single source of truth) so apps that
+    # aggregate per-node — e.g. chat's model dropdown — can union across the cluster.
+    # Apps that don't read CLUSTER_NODES simply ignore it.
+    nodes_env = ",".join(f"http://{n['host']}:11434" for n in fleet.get("nodes", []))
+    ssh_run(m["ssh"], f"cd {rpath} && CLUSTER_NODES='{nodes_env}' ./iot up {app} --build")
 
 
 def cmd_deploy(args):
