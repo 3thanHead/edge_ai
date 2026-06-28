@@ -5,7 +5,7 @@ Works on any systemd Linux; on a Jetson it uses the CUDA GPU automatically.
 
 ```bash
 bash setup.sh
-# or, from the repo root on this machine:  ./iot install-node
+# or, from the repo root on this machine:  ./edge install-node
 ```
 
 What it does:

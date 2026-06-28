@@ -29,25 +29,25 @@ load-balanced, one endpoint" outcome without Kubernetes. Because every node serv
 ## Setup
 
 ### One-shot deploy from your machine (recommended)
-`iot deploy` pushes the whole cluster over SSH — no logging into each box. It reads
+`edge deploy` pushes the whole cluster over SSH — no logging into each box. It reads
 [`fleet.json`](fleet.example.json) (the **single source of truth** for hosts + SSH
 targets), installs/refreshes Ollama on each node, **renders `haproxy.cfg` from the
 fleet**, ships it to the Mini PC, and starts the load balancer.
 
 ```bash
 cp infra/llm-cluster/fleet.example.json infra/llm-cluster/fleet.json   # edit hosts/ssh
-./iot deploy --dry-run     # preview every rsync/ssh + the generated haproxy.cfg
-./iot deploy               # do it: nodes + master
-./iot deploy nodes         # just the Ollama nodes
-./iot deploy master        # just (re)ship haproxy.cfg + restart the LB
-./iot deploy jetson        # just one node
-./iot cluster              # watch them come UP
+./edge deploy --dry-run     # preview every rsync/ssh + the generated haproxy.cfg
+./edge deploy               # do it: nodes + master
+./edge deploy nodes         # just the Ollama nodes
+./edge deploy master        # just (re)ship haproxy.cfg + restart the LB
+./edge deploy jetson        # just one node
+./edge cluster              # watch them come UP
 ```
 Requirements: key-based **SSH** from your machine to each host (`ssh`/`rsync`
 installed), Python 3 on each box, and Docker on the Mini PC. The node install may
 prompt once for `sudo` (it uses `ssh -t`). **Windows has no SSH by default**, so it's
-skipped — run `\.iot.ps1 install-node` on it directly (its only job). Add or remove a
-node by editing `fleet.json` and re-running `./iot deploy master` — the LB config
+skipped — run `\.edge.ps1 install-node` on it directly (its only job). Add or remove a
+node by editing `fleet.json` and re-running `./edge deploy master` — the LB config
 regenerates to match.
 
 ### Manual setup (per machine)
@@ -60,7 +60,7 @@ regenerates to match.
 | Windows PC | 192.168.1.222 | [`nodes/windows/`](nodes/windows/) — `setup.ps1` (elevated) |
 
 Each installs Ollama, binds it to `0.0.0.0:11434` (LAN-reachable), and pulls `llama3.2:3b`.
-Or, from the repo root on each machine, just run **`./iot install-node`** (`.\iot.ps1 install-node`
+Or, from the repo root on each machine, just run **`./edge install-node`** (`.\edge.ps1 install-node`
 on Windows) — it detects the OS and runs the right one. See the [root README](../../README.md#cli).
 
 **2. The master** (on the Mini PC, 192.168.1.111 — needs only Docker):
@@ -95,8 +95,8 @@ request. But nodes can also serve **different** models, and HAProxy routes each 
 to a node that actually has the requested one.
 
 ```bash
-./iot model set llama3.1:8b              # pull on EVERY node + make it the cluster default
-./iot model set qwen2.5:14b --node macbook   # give just one node an extra (bigger) model
+./edge model set llama3.1:8b              # pull on EVERY node + make it the cluster default
+./edge model set qwen2.5:14b --node macbook   # give just one node an extra (bigger) model
 ```
 
 How the routing works (all generated into `haproxy.cfg` from `fleet.json`):
@@ -107,7 +107,7 @@ How the routing works (all generated into `haproxy.cfg` from `fleet.json`):
   even if `fleet.json` is stale. Requests with no/unknown model fall to a liveness backend.
 
 Ollama itself does **not** route across nodes (each instance is standalone) — this
-model-awareness lives entirely in the HAProxy layer. `iot model set` re-renders and
+model-awareness lives entirely in the HAProxy layer. `edge model set` re-renders and
 ships the config automatically, so routing always matches what's pulled where.
 
 > Note: body inspection assumes text-sized requests (`tune.bufsize 65536`). The image-

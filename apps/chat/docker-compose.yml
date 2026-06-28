@@ -22,6 +22,6 @@ services:
       # generation flows through here (load-balanced, fault-tolerant, power-routed).
       LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.1.111:11434}
       # Node URLs to union the model list from (the LB only reflects one node). Injected
-      # from fleet.json by `iot deploy chat`; empty => fall back to listing via the LB.
+      # from fleet.json by `edge deploy chat`; empty => fall back to listing via the LB.
       CLUSTER_NODES: ${CLUSTER_NODES:-}
     restart: unless-stopped

@@ -3,7 +3,7 @@
 # Run in an ELEVATED PowerShell (Run as Administrator):
 #   powershell -ExecutionPolicy Bypass -File setup.ps1
 #
-# After this one-time setup, `iot deploy` (from WSL on this box) keeps the node
+# After this one-time setup, `edge deploy` (from WSL on this box) keeps the node
 # refreshed via interop — no need to re-run this unless you reinstall Windows.
 
 $ErrorActionPreference = "Stop"
