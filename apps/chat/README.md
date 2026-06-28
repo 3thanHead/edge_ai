@@ -20,7 +20,7 @@ native API, so it doesn't care which node (Jetson / MacBook / Windows) actually 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # defaults point at http://192.168.1.111:11434
+cp .env.example .env            # or `./edge up chat` injects the master from fleet.json
 uvicorn app.main:app --host 0.0.0.0 --port 8800
 ```
 Open http://localhost:8800. (Requires the cluster master + at least one node up.)

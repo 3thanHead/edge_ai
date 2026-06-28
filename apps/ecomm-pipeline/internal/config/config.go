@@ -38,7 +38,7 @@ type Config struct {
 // Load reads the environment and applies sensible defaults.
 func Load() Config {
 	return Config{
-		LLMBaseURL: env("LLM_BASE_URL", "http://192.168.1.111:11434"),
+		LLMBaseURL: env("LLM_BASE_URL", "http://localhost:11434"),
 		LLMModel:   env("LLM_MODEL", "llama3.2:3b"),
 
 		SDBaseURL: env("SD_BASE_URL", ""),

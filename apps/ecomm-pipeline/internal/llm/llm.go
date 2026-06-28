@@ -20,7 +20,8 @@ type Client struct {
 }
 
 // New connects to the cluster's Ollama endpoint. baseURL is the HAProxy URL
-// (e.g. http://192.168.1.111:11434); model is an Ollama model tag.
+// (e.g. http://edge-master:11434 or whatever `edge` injects from fleet.json);
+// model is an Ollama model tag.
 func New(baseURL, model string) (*Client, error) {
 	m, err := ollama.New(
 		ollama.WithServerURL(baseURL),

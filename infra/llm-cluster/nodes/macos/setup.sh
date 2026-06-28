@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up the MacBook Air M1 (192.168.1.99) as an Ollama LLM node.
+# Set up the MacBook Air M1 (192.168.1.12) as an Ollama LLM node.
 # Ollama on macOS uses the Apple Silicon GPU (Metal) automatically.  Usage: bash setup.sh
 set -euo pipefail
 
@@ -32,5 +32,5 @@ cat <<'NOTE'
 Done.
 Note: if you normally launch Ollama from the menubar app, set OLLAMA_HOST=0.0.0.0:11434
 in its environment (or rely on the launchctl setenv above) so it stays LAN-reachable
-after a reboot. Verify from another machine:  curl http://192.168.1.99:11434/api/tags
+after a reboot. Verify from another machine:  curl http://192.168.1.12:11434/api/tags
 NOTE

@@ -19,9 +19,10 @@ services:
       # service running on this same host (Ollama/HAProxy or a local SD server).
       - "host.docker.internal:host-gateway"
     environment:
-      # The cluster's single endpoint (HAProxy on the Mini PC, Ollama native API) —
-      # all text generation flows through here (load-balanced, fault-tolerant).
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.1.111:11434}
+      # The cluster's single endpoint (HAProxy, Ollama native API) — all text
+      # generation flows through here (load-balanced, fault-tolerant). `edge up`
+      # injects the real master from fleet.json; this default is just a fallback.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434}
       LLM_MODEL: ${LLM_MODEL:-llama3.2:3b}
       # Local Stable Diffusion (Automatic1111-compatible). Leave empty to use the
       # built-in placeholder generator so the pipeline still runs end-to-end.

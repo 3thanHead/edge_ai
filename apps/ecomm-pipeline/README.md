@@ -56,7 +56,7 @@ dependency is the LLM cluster for the text stages).
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `LLM_BASE_URL` | `http://192.168.1.111:11434` | cluster HAProxy endpoint (Ollama API) |
+| `LLM_BASE_URL` | `http://host.docker.internal:11434` | cluster endpoint; `edge up` injects the master from `fleet.json` |
 | `LLM_MODEL` | `llama3.2:3b` | model tag served by the cluster |
 | `SD_BASE_URL` | *(empty)* | local Stable Diffusion (A1111) URL; empty ⇒ stub art |
 | `SD_STEPS` | `28` | sampling steps for SD |

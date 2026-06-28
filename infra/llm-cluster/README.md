@@ -5,37 +5,42 @@ Native **Ollama** runs on each AI machine (each using its own GPU/accelerator). 
 LAN talks to **one** endpoint that is load-balanced and auto-fails-over between nodes.
 
 ```
-                          Mini PC master (192.168.1.111)
+                          Mini PC master (192.168.1.10)
                         ┌──────────────────────────────┐
    any app on the LAN ─▶│  HAProxy  :11434  (+ :8404)   │
-   (camera, lead-gen,   │  least-conn + health checks   │
-    your laptop, …)     └───────┬───────────┬──────────┘
+   (camera, chat,       │  balance first + checks       │
+    ecomm, your laptop) └───────┬───────────┬──────────┘
                                 │           │           │
                  ┌──────────────┘     ┌─────┘     └──────────────┐
                  ▼                     ▼                          ▼
         Jetson Orin Nano        MacBook Air M1            Windows PC
-        192.168.1.188           192.168.1.99             192.168.1.222
+        192.168.1.11           192.168.1.12             192.168.1.13
         Ollama (CUDA)           Ollama (Metal)           Ollama (NVIDIA)
                          all serving  llama3.2:3b
 ```
+
+> IPs shown throughout this doc are **examples**. Set your real master + node IPs
+> with **`./edge fleet`** — it writes `fleet.json` (gitignored), the single source of
+> truth. Node **order** in `fleet.json` is the routing priority (first = preferred).
 
 ### Why this shape (not k3s)
 k3s is Linux-only — a MacBook (Metal) and a Windows PC can't be real k3s nodes, and a
 k3s pod can't reach their GPUs. Running **native Ollama per machine** is the only way to
 actually use each accelerator; a thin HAProxy in front gives the same "always-up,
 load-balanced, one endpoint" outcome without Kubernetes. Because every node serves the
-**same** model, plain least-connections balancing is all that's needed.
+**same** model, HAProxy just routes in fleet (priority) order — the first healthy node
+wins, overflowing to the next only when it's saturated or down.
 
 ## Setup
 
 ### One-shot deploy from your machine (recommended)
 `edge deploy` pushes the whole cluster over SSH — no logging into each box. It reads
-[`fleet.json`](fleet.example.json) (the **single source of truth** for hosts + SSH
-targets), installs/refreshes Ollama on each node, **renders `haproxy.cfg` from the
-fleet**, ships it to the Mini PC, and starts the load balancer.
+`fleet.json` (the **single source of truth** for hosts + SSH targets — create it with
+`./edge fleet`), installs/refreshes Ollama on each node, **renders `haproxy.cfg` from
+the fleet**, ships it to the Mini PC, and starts the load balancer.
 
 ```bash
-cp infra/llm-cluster/fleet.example.json infra/llm-cluster/fleet.json   # edit hosts/ssh
+./edge fleet                # set the master + node IPs interactively (-> fleet.json)
 ./edge deploy --dry-run     # preview every rsync/ssh + the generated haproxy.cfg
 ./edge deploy               # do it: nodes + master
 ./edge deploy nodes         # just the Ollama nodes
@@ -55,15 +60,15 @@ regenerates to match.
 **1. Each AI node** (run the matching script on each machine):
 | Node | IP | Setup |
 |------|----|-------|
-| Jetson Orin Nano Super | 192.168.1.188 | [`nodes/linux/`](nodes/linux/) — `bash setup.sh` |
-| MacBook Air M1 | 192.168.1.99 | [`nodes/macos/`](nodes/macos/) — `bash setup.sh` |
-| Windows PC | 192.168.1.222 | [`nodes/windows/`](nodes/windows/) — `setup.ps1` (elevated) |
+| Jetson Orin Nano Super | 192.168.1.11 | [`nodes/linux/`](nodes/linux/) — `bash setup.sh` |
+| MacBook Air M1 | 192.168.1.12 | [`nodes/macos/`](nodes/macos/) — `bash setup.sh` |
+| Windows PC | 192.168.1.13 | [`nodes/windows/`](nodes/windows/) — `setup.ps1` (elevated) |
 
 Each installs Ollama, binds it to `0.0.0.0:11434` (LAN-reachable), and pulls `llama3.2:3b`.
 Or, from the repo root on each machine, just run **`./edge install-node`** (`.\edge.ps1 install-node`
 on Windows) — it detects the OS and runs the right one. See the [root README](../../README.md#cli).
 
-**2. The master** (on the Mini PC, 192.168.1.111 — needs only Docker):
+**2. The master** (on the Mini PC, 192.168.1.10 — needs only Docker):
 ```bash
 cd master
 docker compose up -d
@@ -73,19 +78,19 @@ docker compose up -d
 One endpoint for everything:
 ```bash
 # native Ollama API
-curl http://192.168.1.111:11434/api/generate \
+curl http://192.168.1.10:11434/api/generate \
   -d '{"model":"llama3.2:3b","prompt":"hello","stream":false}'
 
-# OpenAI-compatible API (what LangChain / apps/lead-gen use)
-curl http://192.168.1.111:11434/v1/chat/completions \
+# OpenAI-compatible API (what LangChain / apps/ecomm-pipeline use)
+curl http://192.168.1.10:11434/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"llama3.2:3b","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## Operate
-- **Health dashboard:** http://192.168.1.111:8404 — shows each node UP/DOWN, live.
-- **Add/remove a node:** edit the `server` lines in [`master/haproxy.cfg`](master/haproxy.cfg),
-  then `docker compose restart` in `master/`.
+- **Health dashboard:** http://192.168.1.10:8404 — shows each node UP/DOWN, live.
+- **Add/remove a node:** run `./edge fleet` to update the IPs, then `./edge deploy master`
+  — `haproxy.cfg` is regenerated from `fleet.json` (don't hand-edit it).
 - **Failover test:** stop Ollama on one node → requests keep succeeding (served by the
   others); the dashboard shows that node DOWN, and it rejoins automatically when back.
 

@@ -6,5 +6,5 @@ if (-not $py) {
     Write-Error "Python 3 is required but was not found. Install it (e.g. winget install Python.Python.3) and retry."
     exit 1
 }
-& $py.Source "$PSScriptRoot\tools\iotctl\iotctl.py" @args
+& $py.Source "$PSScriptRoot\tools\labctl\labctl.py" @args
 exit $LASTEXITCODE

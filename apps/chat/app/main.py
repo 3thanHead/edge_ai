@@ -18,10 +18,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Cluster endpoint (HAProxy on the Mini PC -> whichever Ollama node is up).
-# Native Ollama API: /api/chat to stream a chat — this is the single, load-balanced,
-# fault-tolerant, power-routed endpoint that ALL generation goes through.
-OLLAMA_URL = os.environ.get("LLM_BASE_URL", "http://192.168.1.111:11434").rstrip("/")
+# Cluster endpoint (HAProxy -> whichever Ollama node is up). Native Ollama API:
+# /api/chat to stream a chat — the single, load-balanced, fault-tolerant endpoint
+# that ALL generation goes through. `edge up`/`edge deploy` inject the real master
+# from fleet.json; the default is just a fallback for a standalone run.
+OLLAMA_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
 
 # Model DISCOVERY is different from generation: /api/tags through the LB only reflects the
 # one node it routes to, so the dropdown would miss models that live on other nodes. When

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Set up a Jetson (Linux/systemd) as an Ollama LLM node for the cluster.
-# Run on the Jetson at 192.168.1.188.  Usage:  bash setup.sh
+# Run on the Jetson at 192.168.1.11.  Usage:  bash setup.sh
 set -euo pipefail
 
 MODEL="${LLM_MODEL:-llama3.2:3b}"
@@ -22,4 +22,4 @@ ollama pull "${MODEL}"
 
 echo "==> Self-check:"
 curl -s http://localhost:11434/api/tags | head -c 300; echo
-echo "Done. This node should now appear UP at http://192.168.1.111:8404"
+echo "Done. This node should now appear UP at http://192.168.1.10:8404"
