@@ -13,8 +13,9 @@ macOS, and Windows. Stdlib-only -- no pip install needed.
 Commands:
     edge fleet                   set the master + node IPs interactively (writes fleet.json)
     edge install-node            set up THIS machine as an Ollama LLM node (OS-sensed)
-    edge deploy [target]         push the cluster from here over SSH (nodes + master)
-    edge deploy <app>            ship the repo + rebuild an app (e.g. chat) on the master
+    edge deploy [all]            push everything over SSH: nodes + master + master apps
+    edge deploy nodes|master     just the LLM nodes, or just the HAProxy master
+    edge deploy <app>            ship the repo + rebuild one app (e.g. chat) on the master
     edge up   <name|all> [--build]   start an app/infra via its docker compose
     edge down <name|all>             stop it
     edge status [name|all]           show running containers (+ machine role)
@@ -54,7 +55,7 @@ MASTER_FALLBACK = "localhost:11434"  # used if no fleet.json (run `edge fleet` t
 
 # Apps that talk to the LLM cluster: `edge up`/`deploy` inject the master endpoint
 # (and node list) from fleet.json so no cluster IPs need to live in committed files.
-CLUSTER_APPS = {"chat", "ecomm-pipeline"}
+CLUSTER_APPS = {"chat", "ecomm-pipeline", "niche-finder"}
 
 DRY_RUN = False  # set by `deploy --dry-run`
 
@@ -316,7 +317,8 @@ def cluster_env():
     """Cluster endpoints for apps, derived from fleet.json (the single source of
     truth) so no cluster IPs need to live in committed app config:
       LLM_BASE_URL  -> the master/HAProxy endpoint
-      CLUSTER_NODES -> comma-separated per-node URLs (apps that union per node)
+      CLUSTER_NODES -> comma-separated `name=url` pairs (apps union models per node and
+                       let the user pin a request to a node; name = the node's hostname)
     Empty when there's no fleet.json — apps then fall back to their compose default."""
     fleet = load_fleet()
     if not fleet:
@@ -325,10 +327,15 @@ def cluster_env():
     master = fleet.get("master", {}).get("host")
     if master:
         env["LLM_BASE_URL"] = f"http://{master}:11434"
-    nodes = ",".join(f"http://{n['host']}:11434" for n in fleet.get("nodes", []))
+    nodes = _cluster_nodes_env(fleet)
     if nodes:
         env["CLUSTER_NODES"] = nodes
     return env
+
+
+def _cluster_nodes_env(fleet):
+    """`name=url` pairs for CLUSTER_NODES, from fleet.json (name = node hostname)."""
+    return ",".join(f"{n['name']}=http://{n['host']}:11434" for n in fleet.get("nodes", []))
 
 
 # ---------- commands ----------
@@ -365,6 +372,31 @@ def _ask(label, default=None):
     return val or (default or "")
 
 
+def _remote_hostname(ssh_target):
+    """Best-effort: ask a node its own hostname so fleet.json can name nodes by hostname
+    instead of node1/node2. Returns a sanitized short hostname (valid as an HAProxy server
+    name), or None if the node can't be reached — the caller then falls back to nodeN."""
+    out = ""
+    try:
+        if ssh_target == "interop":
+            # Windows node, managed via WSL→Windows interop: ask the local Windows host.
+            if not have("powershell.exe"):
+                return None
+            out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", "hostname"],
+                                 capture_output=True, text=True, timeout=10).stdout
+        elif ssh_target:
+            out = subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new",
+                 ssh_target, "hostname"], capture_output=True, text=True, timeout=20).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if not out.strip():
+        return None
+    short = out.strip().splitlines()[0].split(".")[0]          # short hostname, no domain
+    short = re.sub(r"[^A-Za-z0-9_-]", "-", short).strip("-")    # safe as an HAProxy server name
+    return short or None
+
+
 def cmd_fleet(args):
     """Interactively define the cluster's master + node IPs and write fleet.json.
 
@@ -391,6 +423,7 @@ def cmd_fleet(args):
 
     say("")
     nodes = []
+    used_names = set()
     i = 1
     while True:
         ex = ex_nodes[i - 1] if i - 1 < len(ex_nodes) else {}
@@ -408,7 +441,16 @@ def cmd_fleet(args):
             ssh = f"{ex['ssh'].split('@')[0]}@{host}"
         else:
             ssh = "interop" if node_os == "windows" else f"{ssh_user}@{host}"
-        node = {"name": f"node{i}", "host": host, "ssh": ssh, "os": node_os}
+        # Name the node by its real hostname (asked over SSH); fall back to any existing
+        # name, then nodeN, if the node can't be reached. Dedupe any collisions.
+        say(f"    looking up hostname for {host}…")
+        name = _remote_hostname(ssh) or ex.get("name") or f"node{i}"
+        base, n = name, 2
+        while name in used_names:
+            name, n = f"{base}-{n}", n + 1
+        used_names.add(name)
+        say(f"    → {name}")
+        node = {"name": name, "host": host, "ssh": ssh, "os": node_os}
         if ex.get("models"):
             node["models"] = ex["models"]
         nodes.append(node)
@@ -562,7 +604,7 @@ def _deploy_app(app, fleet, rpath):
     # fleet.json is rsync-excluded, so the master has none; passing them on the command
     # line lets the remote `edge up` resolve them for compose. Apps ignore what they
     # don't read.
-    nodes_env = ",".join(f"http://{n['host']}:11434" for n in fleet.get("nodes", []))
+    nodes_env = _cluster_nodes_env(fleet)
     master = fleet.get("master", {}).get("host", "")
     base_env = f"http://{master}:11434" if master else ""
     ssh_run(m["ssh"], f"cd {rpath} && LLM_BASE_URL='{base_env}' CLUSTER_NODES='{nodes_env}' "
@@ -596,6 +638,13 @@ def cmd_deploy(args):
 
     if target in ("all", "master"):
         _deploy_master(fleet, rpath)
+
+    # `all` also (re)deploys the master-resident apps so a plain `edge deploy` ships
+    # everything — code + cluster + apps. camera-vision is intentionally excluded: it
+    # runs on the edge box (Jetson), not the master, so it's deployed there separately.
+    if target == "all":
+        for app in sorted(a for a in apps if a in CLUSTER_APPS):
+            _deploy_app(app, fleet, rpath)
 
     if target not in ("all", "nodes", "master") and target not in known:
         say(f"{C['r']}unknown target: {target}{C['x']}  (use: all | nodes | master | "
@@ -828,9 +877,10 @@ def build_parser():
     s.add_argument("--model", help=f"model to pull (default {DEFAULT_MODEL})")
     s.set_defaults(func=cmd_install_node)
 
-    s = sub.add_parser("deploy", help="push the cluster from here over SSH (uses fleet.json)")
+    s = sub.add_parser("deploy", help="push the cluster + master apps over SSH (uses fleet.json)")
     s.add_argument("target", nargs="?", default="all",
-                   help="all (default) | nodes | master | <node-name> | <app-name>")
+                   help="all (default: nodes + master + master apps) | nodes | master | "
+                        "<node-name> | <app-name>")
     s.add_argument("--dry-run", action="store_true", help="print what would run, do nothing")
     s.set_defaults(func=cmd_deploy)
 
