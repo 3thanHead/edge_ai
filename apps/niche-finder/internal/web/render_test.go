@@ -42,9 +42,11 @@ func sampleNiche() *model.Niche {
 		Audience: "keto dieters", ProductAngle: "printable PDF cookbook", Opportunity: 58,
 		Keywords: []model.Keyword{
 			{Phrase: "printable keto meal prep cookbook", Type: "long-tail", Opportunity: 58,
-				Saturation: saturation.Result{Value: 42, Method: "measured", Competitors: 1203, Source: "etsy"}},
+				Score: saturation.Score{Opportunity: 58, Demand: 70, Competition: 42, Intent: 80,
+					Competitors: 1203, CompSrc: "etsy", Confidence: "high"}},
 			{Phrase: "keto cookbook", Type: "short-tail", Opportunity: 12,
-				Saturation: saturation.Result{Value: 88, Method: "estimated", Source: "llm"}},
+				Score: saturation.Score{Opportunity: 12, Demand: 60, Competition: 88, Intent: 40,
+					CompSrc: "llm", Confidence: "low"}},
 		},
 	}
 }

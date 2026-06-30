@@ -84,10 +84,13 @@
             <div class="kwhead">
               <span class="tail {{.Type}}">{{.Type}}</span>
               <span class="phrase">{{.Phrase}}</span>
-              <span class="opp">{{.Opportunity}}</span>
+              <span class="opp" title="opportunity">{{.Opportunity}}</span>
             </div>
-            <div class="track sm"><div class="fill" style="width: {{.Saturation}}%; background: {{.MeterColor}};"></div></div>
-            <div class="scale"><span>sat {{.Saturation}}{{if .Competitors}} · {{.Competitors}} on {{.SatSource}}{{end}}</span><span class="badge {{.Method}}">{{.Method}}</span></div>
+            <div class="track sm"><div class="fill" style="width: {{.Opportunity}}%; background: {{.MeterColor}};"></div></div>
+            <div class="scale">
+              <span>demand {{if ge .Demand 0}}{{.Demand}}{{else}}—{{end}} · competition {{if ge .Competition 0}}{{.Competition}}{{else}}—{{end}} · intent {{.Intent}}</span>
+              <span class="badge conf-{{.Confidence}}">{{.Confidence}}</span>
+            </div>
           </div>
           {{end}}
         </div>

@@ -6,12 +6,12 @@ import "github.com/3thanHead/iot_ai/niche-finder/internal/model"
 type keywordView struct {
 	Phrase      string
 	Type        string // "long-tail" | "short-tail"
-	Saturation  int
 	Opportunity int
 	MeterColor  string
-	Method      string // "measured" | "estimated"
-	Competitors int
-	SatSource   string
+	Demand      int
+	Competition int
+	Intent      int
+	Confidence  string // "high" | "low"
 	Detail      string
 }
 
@@ -47,13 +47,13 @@ func toView(n *model.Niche) nicheView {
 		v.Keywords = append(v.Keywords, keywordView{
 			Phrase:      k.Phrase,
 			Type:        k.Type,
-			Saturation:  k.Saturation.Value,
 			Opportunity: k.Opportunity,
 			MeterColor:  k.MeterColor(),
-			Method:      k.Saturation.Method,
-			Competitors: k.Saturation.Competitors,
-			SatSource:   k.Saturation.Source,
-			Detail:      k.Saturation.Detail,
+			Demand:      k.Score.Demand,
+			Competition: k.Score.Competition,
+			Intent:      k.Score.Intent,
+			Confidence:  k.Score.Confidence,
+			Detail:      k.Score.Detail,
 		})
 	}
 	return v

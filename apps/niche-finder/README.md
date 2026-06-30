@@ -42,11 +42,24 @@ investigate from your seeds + live leads — you supply no keywords):
 | **Propose themes** | Qwen expands your **seed categories** into ~12 themes, each with long-tail SEO search terms (applying keyword rules: buyer intent, modifiers like "printable/template/svg", specificity). |
 | **Deepen** | Each term is run through **Reddit search** to gather real demand evidence. |
 | **Critique** | A skeptic pass finds gaps and proposes fresh follow-up terms → a second deepen round. |
-| **Synthesize** | Per theme, Qwen distills concrete digital-product niches grounded in the evidence (name, keyword, audience, product, rationale, signal count). |
-| **Measure saturation** | Each keyword scored 0–100. Prefers a **real count** — Etsy API `count` (if keyed), else scraped **eBay** results — falling back to a **Qwen estimate**, clearly labelled. |
+| **Synthesize** | Per theme, Qwen distills concrete digital-product niches grounded in the evidence (name, audience, product, rationale + a list of long/short-tail keywords). |
+| **Score opportunity** | Each keyword gets an **opportunity score** (0–100) — see below. |
 
-`opportunity = 100 − saturation`; the board sorts favorites first, then by
-opportunity, each with a colour-coded meter and a `measured`/`estimated` badge.
+### Opportunity score (per keyword)
+A composite, not just a listing count — `opportunity` rewards **high demand, low
+competition, strong intent**:
+
+| Signal | How it's measured | Cost |
+|--------|-------------------|------|
+| **Demand** | Google autocomplete depth (how many real-search completions the phrase/root yields) | free, no key, always on |
+| **Competition** | Etsy listing **count + incumbent strength** (median favorites of the top listings) when keyed; eBay count if you enable it; LLM estimate as last resort | free; needs the Etsy key for the real signal |
+| **Intent** | phrase heuristics — long-tail + buyer modifiers (`printable`, `template`, `svg`, …) | free, no key, always on |
+
+`opportunity = 0.4·demand + 0.4·(100−competition) + 0.2·intent`, reweighted when a
+signal is missing. A keyword is **high confidence** only when both demand and a
+*measured* (Etsy) competition exist — otherwise it's flagged **low** (e.g. before
+your Etsy key lands, demand+intent carry the score). The board sorts favorites
+first, then by opportunity; each niche's headline is its best keyword.
 
 Each niche is an **item niche name** with a **list of SEO keywords** (long- and
 short-tail), and **every keyword is scored individually** so you can see which
@@ -65,7 +78,8 @@ The board is also a read API for other tools:
 
 ```
 GET /api/niches              # JSON: [{name, category, audience, product, opportunity,
-                             #         keywords:[{phrase, type, saturation, opportunity, method, ...}]}]
+                             #         keywords:[{phrase, type, opportunity, demand,
+                             #                    competition, intent, confidence, ...}]}]
 GET /api/niches?format=text  # plain text report (also /api/niches.txt)
 ```
 

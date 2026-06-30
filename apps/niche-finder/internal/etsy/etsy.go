@@ -28,11 +28,15 @@ func New(apiKey string) *Client {
 	return &Client{key: apiKey, http: &http.Client{Timeout: 12 * time.Second}}
 }
 
-// Listing is the slice of an Etsy listing we care about.
+// Listing is the slice of an Etsy listing we care about. NumFavorers + the
+// creation timestamp let the saturation scorer gauge competition *strength*
+// (entrenched, popular incumbents) rather than just listing count.
 type Listing struct {
-	Title string   `json:"title"`
-	Tags  []string `json:"tags"`
-	URL   string   `json:"url"`
+	Title       string   `json:"title"`
+	Tags        []string `json:"tags"`
+	URL         string   `json:"url"`
+	NumFavorers int      `json:"num_favorers"`
+	Created     int64    `json:"original_creation_timestamp"`
 }
 
 type activeResponse struct {

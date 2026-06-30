@@ -9,16 +9,17 @@ import (
 	"github.com/3thanHead/iot_ai/niche-finder/internal/saturation"
 )
 
-// Keyword is one SEO search phrase for a niche, with its measured saturation.
+// Keyword is one SEO search phrase for a niche, with its composite opportunity
+// score (demand vs competition vs intent).
 type Keyword struct {
-	Phrase      string            `json:"phrase"`
-	Type        string            `json:"type"` // "long-tail" | "short-tail"
-	Saturation  saturation.Result `json:"saturation"`
-	Opportunity int               `json:"opportunity"` // 100 - Saturation.Value; higher = better
+	Phrase      string           `json:"phrase"`
+	Type        string           `json:"type"` // "long-tail" | "short-tail"
+	Score       saturation.Score `json:"score"`
+	Opportunity int              `json:"opportunity"` // = Score.Opportunity; higher = better
 }
 
-// MeterColor maps a keyword's saturation to a CSS color: green (open) → red.
-func (k Keyword) MeterColor() string { return meterColor(k.Saturation.Value) }
+// MeterColor maps a keyword's opportunity to a CSS color: green (great) → red.
+func (k Keyword) MeterColor() string { return oppColor(k.Opportunity) }
 
 // Niche is one discovered item niche: a name + the product framing + a list of
 // SEO keywords (long- and short-tail) each scored for how crowded it is.
@@ -54,13 +55,15 @@ func (n Niche) BestKeyword() Keyword {
 	return best
 }
 
-func meterColor(v int) string {
+// oppColor maps a 0-100 opportunity to a CSS bar color: green (great lane) →
+// amber → red (poor).
+func oppColor(v int) string {
 	switch {
-	case v < 34:
-		return "#2e9e5b" // green — low saturation, open lane
-	case v < 67:
-		return "#d99b1c" // amber — getting crowded
+	case v >= 66:
+		return "#2e9e5b" // green — strong opportunity
+	case v >= 33:
+		return "#d99b1c" // amber — middling
 	default:
-		return "#cf3b3b" // red — saturated
+		return "#cf3b3b" // red — weak (crowded / low demand)
 	}
 }

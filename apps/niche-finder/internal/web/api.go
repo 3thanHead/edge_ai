@@ -19,11 +19,13 @@ import (
 type apiKeyword struct {
 	Phrase      string `json:"phrase"`
 	Type        string `json:"type"`
-	Saturation  int    `json:"saturation"`
 	Opportunity int    `json:"opportunity"`
-	Method      string `json:"method"`
+	Demand      int    `json:"demand"`
+	Competition int    `json:"competition"`
+	Intent      int    `json:"intent"`
+	Confidence  string `json:"confidence"`
 	Competitors int    `json:"competitors,omitempty"`
-	Source      string `json:"source,omitempty"`
+	CompSource  string `json:"compSource,omitempty"`
 }
 
 // apiNiche is the stable wire shape of one niche.
@@ -95,11 +97,13 @@ func toAPI(n *model.Niche) apiNiche {
 		a.Keywords = append(a.Keywords, apiKeyword{
 			Phrase:      k.Phrase,
 			Type:        k.Type,
-			Saturation:  k.Saturation.Value,
 			Opportunity: k.Opportunity,
-			Method:      k.Saturation.Method,
-			Competitors: k.Saturation.Competitors,
-			Source:      k.Saturation.Source,
+			Demand:      k.Score.Demand,
+			Competition: k.Score.Competition,
+			Intent:      k.Score.Intent,
+			Confidence:  k.Score.Confidence,
+			Competitors: k.Score.Competitors,
+			CompSource:  k.Score.CompSrc,
 		})
 	}
 	return a
@@ -123,12 +127,19 @@ func renderText(niches []apiNiche) string {
 		}
 		b.WriteString("  keywords:\n")
 		for _, k := range n.Keywords {
-			extra := k.Method
-			if k.Competitors > 0 {
-				extra = fmt.Sprintf("%s, %d on %s", k.Method, k.Competitors, k.Source)
+			comp := "—"
+			if k.Competition >= 0 {
+				comp = fmt.Sprintf("%d", k.Competition)
+				if k.Competitors > 0 {
+					comp = fmt.Sprintf("%d (%d on %s)", k.Competition, k.Competitors, k.CompSource)
+				}
 			}
-			fmt.Fprintf(&b, "    [%-10s] %-45s sat %3d  opp %3d  (%s)\n",
-				k.Type, k.Phrase, k.Saturation, k.Opportunity, extra)
+			dem := "—"
+			if k.Demand >= 0 {
+				dem = fmt.Sprintf("%d", k.Demand)
+			}
+			fmt.Fprintf(&b, "    [%-10s] %-45s opp %3d  | demand %s  competition %s  intent %d  [%s]\n",
+				k.Type, k.Phrase, k.Opportunity, dem, comp, k.Intent, k.Confidence)
 		}
 	}
 	return b.String()

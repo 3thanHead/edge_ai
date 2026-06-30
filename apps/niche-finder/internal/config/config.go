@@ -49,7 +49,9 @@ func Load() Config {
 		EtsyAPIKey:   env("ETSY_API_KEY", ""),
 		MineLimit:    envInt("MINE_LIMIT", 25),
 
-		SaturationMarkets: envList("SATURATION_MARKETS", []string{"etsy", "ebay"}),
+		// Digital goods live on Etsy, not eBay — so Etsy is the only default
+		// competition market. eBay is opt-in (add it to the list) as a weak proxy.
+		SaturationMarkets: envList("SATURATION_MARKETS", []string{"etsy"}),
 
 		Addr:    env("LISTEN_ADDR", ":8820"),
 		DataDir: env("DATA_DIR", "/data"),

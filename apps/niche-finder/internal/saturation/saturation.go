@@ -1,74 +1,122 @@
-// Package saturation scores how crowded a niche is on a 0-100 meter (0 = wide
-// open, 100 = saturated). It prefers a real competition count from a marketplace
-// (Etsy's official API, else an eBay search-result count) and falls back to an
-// LLM estimate when no count can be measured.
+// Package saturation scores a keyword's *opportunity* (0-100, higher = better) as
+// a composite of three free signals: search DEMAND (Google autocomplete depth),
+// COMPETITION (Etsy listing count + incumbent strength, with eBay/LLM fallback),
+// and buyer INTENT (phrase heuristics). Opportunity rewards high demand, low
+// competition, and strong intent — a far better gauge than raw listing count.
 package saturation
 
 import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/3thanHead/iot_ai/niche-finder/internal/etsy"
 )
 
-// Result is a single niche's saturation score plus how it was derived.
-type Result struct {
-	Value       int    `json:"value"`       // 0-100 saturation meter
-	Method      string `json:"method"`      // "measured" | "estimated"
-	Competitors int    `json:"competitors"` // listing count, when measured
-	Source      string `json:"source"`      // "etsy" | "ebay" | "llm"
-	Detail      string `json:"detail"`      // human note for the UI
+// Score is a keyword's opportunity plus the components that produced it. A
+// component of -1 means "couldn't measure" (e.g. competition with no Etsy key).
+type Score struct {
+	Opportunity int    `json:"opportunity"` // composite 0-100, higher = better
+	Demand      int    `json:"demand"`      // 0-100 search demand (-1 unknown)
+	Competition int    `json:"competition"` // 0-100 saturation, higher = crowded (-1 unknown)
+	Intent      int    `json:"intent"`      // 0-100 buyer intent
+	Competitors int    `json:"competitors,omitempty"`
+	DemandSrc   string `json:"demandSource,omitempty"`
+	CompSrc     string `json:"compSource,omitempty"`
+	Confidence  string `json:"confidence"` // "high" (real demand+competition) | "low"
+	Detail      string `json:"detail"`
 }
 
-// JSONEstimator is the slice of the LLM client used for the fallback estimate.
+// JSONEstimator is the slice of the LLM client used for the competition fallback.
 type JSONEstimator interface {
 	CompleteJSON(ctx context.Context, prompt string, temperature float64, out any) error
 }
 
-// Scorer measures saturation across configured markets, in order.
+// Scorer computes opportunity. markets is the competition try-order (e.g.
+// ["etsy"]); etsy is nil without an API key; llm is the last-resort estimator.
 type Scorer struct {
-	markets []string      // try order, e.g. ["etsy","ebay"]
-	etsy    *etsy.Client  // nil when no API key
-	llm     JSONEstimator // fallback
+	markets []string
+	etsy    *etsy.Client
+	llm     JSONEstimator
 }
 
 func NewScorer(markets []string, etsyClient *etsy.Client, llm JSONEstimator) *Scorer {
 	return &Scorer{markets: markets, etsy: etsyClient, llm: llm}
 }
 
-// Score returns the saturation of `keyword`. It never returns an error: if every
-// measured source fails it returns an LLM estimate, and if that fails too it
-// returns a neutral, clearly-labelled unknown.
-func (s *Scorer) Score(ctx context.Context, keyword string) Result {
-	for _, m := range s.markets {
-		switch m {
-		case "etsy":
-			if s.etsy == nil {
-				continue
-			}
-			count, _, err := s.etsy.ActiveListings(ctx, keyword, 1)
-			if err == nil {
-				return measured("etsy", count)
-			}
-		case "ebay":
-			if count, err := ebayCount(ctx, keyword); err == nil {
-				return measured("ebay", count)
-			}
-		}
+// composite weights (must each sum to 1 within a branch).
+const (
+	wDemand = 0.40
+	wComp   = 0.40
+	wIntent = 0.20
+)
+
+// Score computes a keyword's opportunity. It never errors: unmeasurable signals
+// drop out and the remaining ones are reweighted, with Confidence marked "low".
+func (s *Scorer) Score(ctx context.Context, phrase, tail string) Score {
+	intent := intentScore(phrase, tail)
+	demand, suggestions, derr := autocompleteDemand(ctx, phrase)
+	if derr != nil {
+		demand = -1
 	}
-	return s.estimate(ctx, keyword)
+	comp, competitors, compSrc := s.competition(ctx, phrase)
+
+	sc := Score{
+		Demand:      demand,
+		Competition: comp,
+		Intent:      intent,
+		Competitors: competitors,
+		CompSrc:     compSrc,
+	}
+	if demand >= 0 {
+		sc.DemandSrc = "google-autocomplete"
+	}
+	sc.Opportunity = compose(demand, comp, intent)
+	// High confidence only when both demand and a *measured* competition exist
+	// (an LLM-estimated competition is still a guess).
+	if demand >= 0 && compSrc == "etsy" {
+		sc.Confidence = "high"
+	} else {
+		sc.Confidence = "low"
+	}
+	sc.Detail = detail(demand, suggestions, comp, competitors, compSrc, intent)
+	return sc
 }
 
-// measured builds a Result from a real competitor count.
-func measured(source string, count int) Result {
-	return Result{
-		Value:       meterFromCount(count),
-		Method:      "measured",
-		Competitors: count,
-		Source:      source,
-		Detail:      fmt.Sprintf("%d competing listings on %s", count, source),
+// compose blends the available signals into a 0-100 opportunity, reweighting when
+// demand or competition is missing.
+func compose(demand, comp, intent int) int {
+	switch {
+	case demand >= 0 && comp >= 0:
+		v := wDemand*f(demand) + wComp*f(100-comp) + wIntent*f(intent)
+		return clamp(round(v), 0, 100)
+	case demand >= 0: // no competition signal
+		v := 0.60*f(demand) + 0.40*f(intent)
+		return clamp(round(v), 0, 100)
+	case comp >= 0: // no demand signal
+		v := 0.55*f(100-comp) + 0.45*f(intent)
+		return clamp(round(v), 0, 100)
+	default: // only intent
+		return clamp(intent, 0, 100)
 	}
+}
+
+func detail(demand, suggestions, comp, competitors int, compSrc string, intent int) string {
+	d := "demand n/a"
+	if demand >= 0 {
+		d = fmt.Sprintf("demand %d (%d autocompletes)", demand, suggestions)
+	}
+	c := "competition n/a"
+	if comp >= 0 {
+		switch {
+		case competitors > 0:
+			c = fmt.Sprintf("competition %d (%s, %d listings)", comp, compSrc, competitors)
+		default:
+			c = fmt.Sprintf("competition %d (%s)", comp, compSrc)
+		}
+	}
+	return strings.Join([]string{d, c, fmt.Sprintf("intent %d", intent)}, " · ")
 }
 
 // saturationRef is the listing count treated as "fully saturated" (meter 100).
@@ -84,26 +132,14 @@ func meterFromCount(count int) int {
 	return clamp(int(math.Round(v)), 0, 100)
 }
 
-// estimate asks the LLM to guess saturation when nothing could be measured.
-func (s *Scorer) estimate(ctx context.Context, keyword string) Result {
-	if s.llm == nil {
-		return Result{Value: 50, Method: "estimated", Source: "none", Detail: "no data; neutral default"}
-	}
-	var out struct {
-		Value     int    `json:"value"`
-		Rationale string `json:"rationale"`
-	}
-	prompt := fmt.Sprintf(`Estimate how saturated the print-on-demand / e-commerce market is for the niche %q.
-Return a JSON object: {"value": <0-100 integer, 0 = wide open, 100 = totally saturated>, "rationale": "<one short sentence>"}.`, keyword)
-	if err := s.llm.CompleteJSON(ctx, prompt, 0.2, &out); err != nil {
-		return Result{Value: 50, Method: "estimated", Source: "llm", Detail: "LLM estimate failed; neutral default"}
-	}
-	detail := out.Rationale
-	if detail == "" {
-		detail = "LLM estimate (no live competition data)"
-	}
-	return Result{Value: clamp(out.Value, 0, 100), Method: "estimated", Source: "llm", Detail: detail}
+// logRatio returns log10(n) / log10(ref) — a 0..1 (and beyond) position of n on a
+// log scale anchored at ref.
+func logRatio(n, ref int) float64 {
+	return math.Log10(float64(n)) / math.Log10(float64(ref))
 }
+
+func f(v int) float64     { return float64(v) }
+func round(v float64) int { return int(math.Round(v)) }
 
 func clamp(v, lo, hi int) int {
 	if v < lo {

@@ -377,14 +377,14 @@ func (f *Finder) buildNiche(ctx context.Context, c Candidate) *model.Niche {
 	return n
 }
 
-// scoreKeyword measures one phrase's saturation.
+// scoreKeyword computes one phrase's opportunity (demand vs competition vs intent).
 func (f *Finder) scoreKeyword(ctx context.Context, phrase, tail string) model.Keyword {
-	sat := f.scorer.Score(ctx, phrase)
+	sc := f.scorer.Score(ctx, phrase, tail)
 	return model.Keyword{
 		Phrase:      phrase,
 		Type:        tail,
-		Saturation:  sat,
-		Opportunity: 100 - sat.Value,
+		Score:       sc,
+		Opportunity: sc.Opportunity,
 	}
 }
 
