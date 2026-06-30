@@ -4,7 +4,8 @@
 Serves a single-page chat frontend and streams tokens from Ollama back to the
 browser over a WebSocket as they are generated (like Claude Code's live output).
 Models are listed straight from the cluster, so the dropdown always reflects
-whatever is actually loaded across the Jetson / MacBook / Windows nodes.
+whatever is actually loaded across the nodes. A chat can run load-balanced through
+HAProxy (default) or be pinned to a specific node via the node picker.
 
     uvicorn app.main:app --host 0.0.0.0 --port 8800
 """
@@ -24,11 +25,29 @@ from fastapi.staticfiles import StaticFiles
 # from fleet.json; the default is just a fallback for a standalone run.
 OLLAMA_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
 
-# Model DISCOVERY is different from generation: /api/tags through the LB only reflects the
-# one node it routes to, so the dropdown would miss models that live on other nodes. When
-# the deploy injects CLUSTER_NODES (comma-separated node URLs, from fleet.json), list the
-# UNION of models across nodes. Falls back to the LB endpoint alone for local/dev runs.
-CLUSTER_NODES = [u.strip().rstrip("/") for u in os.environ.get("CLUSTER_NODES", "").split(",") if u.strip()]
+# Per-node access serves two features beyond the load-balanced LB:
+#   1. Model DISCOVERY — /api/tags through the LB only reflects the one node it routes to,
+#      so we union /api/tags across nodes to build the full dropdown.
+#   2. Node PINNING — the user can target one node directly, bypassing the LB.
+# `edge up`/`edge deploy` inject CLUSTER_NODES as comma-separated `name=url` pairs from
+# fleet.json (name = the node's hostname). Legacy plain-url entries are still accepted
+# (name defaults to the url). Empty => fall back to the LB endpoint alone (local/dev).
+def _parse_nodes(raw):
+    nodes = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, sep, url = item.partition("=")
+        if sep:
+            nodes[name.strip()] = url.strip().rstrip("/")
+        else:  # legacy: bare URL, name == URL
+            u = name.strip().rstrip("/")
+            nodes[u] = u
+    return nodes
+
+
+NODES = _parse_nodes(os.environ.get("CLUSTER_NODES", ""))   # hostname -> node Ollama URL
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -47,24 +66,37 @@ async def _node_models(client, url):
 @app.get("/api/models")
 async def list_models():
     """Return the union of model names available across the cluster's nodes."""
-    sources = CLUSTER_NODES or [OLLAMA_URL]
+    sources = list(NODES.values()) or [OLLAMA_URL]
     async with httpx.AsyncClient(timeout=5) as client:
         per_node = await asyncio.gather(*(_node_models(client, u) for u in sources))
     return {"models": sorted({name for names in per_node for name in names})}
 
 
-async def _stream_chat(ws: WebSocket, model, messages):
+@app.get("/api/nodes")
+async def list_nodes():
+    """Node names a chat can be pinned to (in addition to the default load-balanced LB).
+    Empty when no per-node info is configured, so the UI hides the picker."""
+    return {"nodes": sorted(NODES)}
+
+
+async def _stream_chat(ws: WebSocket, model, messages, node=None):
     """Stream one completion to the browser. Cancelling this task unwinds the httpx
-    context managers, which closes the upstream request so Ollama stops generating."""
+    context managers, which closes the upstream request so Ollama stops generating.
+
+    `node` (a name from /api/nodes) pins generation to that node's Ollama directly;
+    otherwise it goes through the load-balanced LB endpoint."""
+    target = NODES.get(node) if node else None     # None => use the LB
+    url = target or OLLAMA_URL
     payload = {"model": model, "messages": messages, "stream": True}
     try:
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
+            async with client.stream("POST", f"{url}/api/chat", json=payload) as resp:
                 resp.raise_for_status()
-                # HAProxy stamps the serving node on X-Served-By; show it in the UI.
-                node = resp.headers.get("x-served-by")
-                if node:
-                    await ws.send_json({"type": "node", "name": node})
+                # Through the LB, HAProxy stamps the serving node on X-Served-By. Going
+                # direct to a node there's no such header, so report the pinned node itself.
+                served = node if target else resp.headers.get("x-served-by")
+                if served:
+                    await ws.send_json({"type": "node", "name": served})
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue
@@ -111,12 +143,13 @@ async def chat(ws: WebSocket):
 
             model = req.get("model")
             messages = req.get("messages", [])
+            node = req.get("node")  # optional: pin to one node, else load-balanced
             if not model or not messages:
                 await ws.send_json({"type": "error", "message": "model and messages are required"})
                 continue
 
             await _cancel(gen)  # never run two generations on one socket at once
-            gen = asyncio.create_task(_stream_chat(ws, model, messages))
+            gen = asyncio.create_task(_stream_chat(ws, model, messages, node))
     except WebSocketDisconnect:
         await _cancel(gen)  # client closed the tab mid-stream -> stop generating upstream
 
